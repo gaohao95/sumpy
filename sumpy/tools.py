@@ -717,4 +717,18 @@ def my_syntactic_subs(expr, subst_dict):
         return expr
 
 
+def get_loopy_domain(loop_domains):
+    domain_names = ""
+    conditions = ""
+
+    for idx, (name, low, high) in enumerate(loop_domains):
+        domain_names += f"{name}"
+        conditions += f"{low} <= {name} < {high}"
+
+        if idx + 1 != len(loop_domains):
+            domain_names += ", "
+            conditions += " and "
+
+    return "{[" + domain_names + "]:" + conditions + "}"
+
 # vim: fdm=marker

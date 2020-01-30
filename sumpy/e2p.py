@@ -102,7 +102,7 @@ class E2PBase(KernelCacheWrapper):
         sac.run_global_cse()
 
         from sumpy.codegen import to_loopy_insns
-        loopy_insns = to_loopy_insns(
+        loopy_insns, additional_loop_domain = to_loopy_insns(
                 six.iteritems(sac.assignments),
                 vector_names=set(["b"]),
                 pymbolic_expr_maps=[self.expansion.get_code_transformer()],

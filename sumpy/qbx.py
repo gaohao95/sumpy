@@ -66,16 +66,26 @@ def stringify_expn_index(i):
 
 
 def expand(expansion_nr, sac, expansion, avec, bvec):
+    import sympy
+
     rscale = sym.Symbol("rscale")
 
     coefficients = expansion.coefficients_from_source(avec, bvec, rscale)
 
-    assigned_coeffs = [
-            sym.Symbol(
-                    sac.assign_unique("expn%dcoeff%s" % (
-                        expansion_nr, stringify_expn_index(i)),
-                        coefficients[expansion.get_storage_index(i)]))
-            for i in expansion.get_coefficient_identifiers()]
+    if isinstance(coefficients, list):
+        # 'coefficients' is a concrete list
+        assigned_coeffs = [
+                sym.Symbol(
+                        sac.assign_unique("expn%dcoeff%s" % (
+                            expansion_nr, stringify_expn_index(i)),
+                            coefficients[expansion.get_storage_index(i)]))
+                for i in expansion.get_coefficient_identifiers()]
+    elif isinstance(coefficients, sympy.expr.Expr):
+        # 'coefficients' is a symbolic expression which takes the order as a symbolic
+        # variable
+        assigned_coeffs = coefficients
+    else:
+        raise TypeError("Unknown type for coefficients_from_source")
 
     return sac.assign_unique("expn%d_result" % expansion_nr,
             expansion.evaluate(assigned_coeffs, bvec, rscale))
@@ -119,10 +129,10 @@ class LayerPotentialBase(KernelComputation, KernelCacheWrapper):
 
         logger.info("compute expansion expressions: done")
 
-        sac.run_global_cse()
+        # sac.run_global_cse()
 
         from sumpy.codegen import to_loopy_insns
-        loopy_insns = to_loopy_insns(
+        loopy_insns, additional_loop_domain, additional_arguments = to_loopy_insns(
                 six.iteritems(sac.assignments),
                 vector_names=set(["a", "b"]),
                 pymbolic_expr_maps=[
@@ -131,7 +141,7 @@ class LayerPotentialBase(KernelComputation, KernelCacheWrapper):
                 complex_dtype=np.complex128  # FIXME
                 )
 
-        return loopy_insns, result_names
+        return loopy_insns, result_names, additional_loop_domain, additional_arguments
 
     def get_strength_or_not(self, isrc, kernel_idx):
         return var("strength_%d" % self.strength_usage[kernel_idx]).index(isrc)
@@ -198,7 +208,8 @@ class LayerPotential(LayerPotentialBase):
 
     @memoize_method
     def get_kernel(self):
-        loopy_insns, result_names = self.get_loopy_insns_and_result_names()
+        loopy_insns, result_names, additional_loop_domain, additional_arguments = \
+            self.get_loopy_insns_and_result_names()
         kernel_exprs = self.get_kernel_exprs(result_names)
         arguments = (
             self.get_default_src_tgt_arguments()
@@ -207,14 +218,19 @@ class LayerPotential(LayerPotentialBase):
             for i in range(self.strength_count)]
             + [lp.GlobalArg("result_%d" % i,
                 None, shape="ntargets", order="C")
-            for i in range(len(self.kernels))])
+            for i in range(len(self.kernels))]
+            + additional_arguments
+        )
 
-        loopy_knl = lp.make_kernel(["""
-            {[itgt, isrc, idim]: \
-                0 <= itgt < ntargets and \
-                0 <= isrc < nsources and \
-                0 <= idim < dim}
-            """],
+        from sumpy.tools import get_loopy_domain
+        domain = get_loopy_domain(
+            [("itgt", "0", "ntargets"),
+             ("isrc", "0", "nsources"),
+             ("idim", "0", "dim")
+             ] + additional_loop_domain
+        )
+
+        loopy_knl = lp.make_kernel([domain],
             self.get_kernel_scaling_assignments()
             + ["for itgt, isrc"]
             + ["<> a[idim] = center[idim, itgt] - src[idim, isrc] {dup=idim}"]
@@ -250,6 +266,7 @@ class LayerPotential(LayerPotentialBase):
         """
 
         knl = self.get_cached_optimized_kernel()
+        knl = lp.set_options(knl, "return_dict")
 
         for i, dens in enumerate(strengths):
             kwargs["strength_%d" % i] = dens

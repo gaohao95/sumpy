@@ -183,11 +183,14 @@ def draw_pot_figure(aspect_ratio,
     evt, (vol_pot,) = p2p(queue, fp.points, native_curve.pos,
             [native_curve.speed*native_weights*density], **volpot_kwargs)
 
-    evt, (curve_pot,) = lpot(queue, native_curve.pos, ovsmp_curve.pos,
+    evt, rtv = lpot(queue, native_curve.pos, ovsmp_curve.pos,
             centers,
             [ovsmp_density * ovsmp_curve.speed * ovsmp_weights],
             expansion_radii=np.ones(centers.shape[1]),
             **lpot_kwargs)
+
+    print(rtv.keys())
+    curve_pot = rtv["result_0"]
 
     # }}}
 

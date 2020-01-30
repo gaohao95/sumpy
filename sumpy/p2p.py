@@ -99,7 +99,7 @@ class P2PBase(KernelComputation, KernelCacheWrapper):
         sac.run_global_cse()
 
         from sumpy.codegen import to_loopy_insns
-        loopy_insns = to_loopy_insns(six.iteritems(sac.assignments),
+        loopy_insns, additional_loop_domain, additional_arguments = to_loopy_insns(six.iteritems(sac.assignments),
                 vector_names=set(["d"]),
                 pymbolic_expr_maps=[
                         knl.get_code_transformer() for knl in self.kernels],
@@ -107,7 +107,7 @@ class P2PBase(KernelComputation, KernelCacheWrapper):
                 complex_dtype=np.complex128  # FIXME
                 )
 
-        return loopy_insns, result_names
+        return loopy_insns, result_names, additional_loop_domain, additional_arguments
 
     def get_strength_or_not(self, isrc, kernel_idx):
         return var("strength").index((self.strength_usage[kernel_idx], isrc))
@@ -168,7 +168,8 @@ class P2P(P2PBase):
     default_name = "p2p_apply"
 
     def get_kernel(self):
-        loopy_insns, result_names = self.get_loopy_insns_and_result_names()
+        loopy_insns, result_names, additional_loop_domain, additional_arguments = \
+            self.get_loopy_insns_and_result_names()
         kernel_exprs = self.get_kernel_exprs(result_names)
         arguments = (
             self.get_default_src_tgt_arguments()
@@ -177,14 +178,20 @@ class P2P(P2PBase):
                     shape="nstrengths, nsources", dim_tags="sep,C"),
                 lp.GlobalArg("result", None,
                     shape="nresults, ntargets", dim_tags="sep,C")
-            ])
+            ]
+            + additional_arguments
+        )
 
-        loopy_knl = lp.make_kernel(["""
-            {[itgt, isrc, idim]: \
-                0 <= itgt < ntargets and \
-                0 <= isrc < nsources and \
-                0 <= idim < dim}
-            """],
+        from sumpy.tools import get_loopy_domain
+        domain = get_loopy_domain(
+            [("itgt", "0", "ntargets"),
+             ("isrc", "0", "nsources"),
+             ("idim", "0", "dim")
+             ] + additional_loop_domain
+        )
+
+        loopy_knl = lp.make_kernel(
+            [domain],
             self.get_kernel_scaling_assignments()
             + ["for itgt, isrc"]
             + ["<> d[idim] = targets[idim, itgt] - sources[idim, isrc]"]

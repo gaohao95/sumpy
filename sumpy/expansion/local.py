@@ -246,37 +246,49 @@ class _FourierBesselLocalExpansion(LocalExpansionBase):
         if not self.use_rscale:
             rscale = 1
 
-        from sumpy.symbolic import sym_real_norm_2
-        hankel_1 = sym.Function("hankel_1")
+        # "hankel_1n" differs from "hankel_1" by precomputing Hankel function inside
+        # a loop instead of recursively unrolling it
+        hankel_1 = sym.Function("hankel_1n")
 
         arg_scale = self.get_bessel_arg_scaling()
 
         # The coordinates are negated since avec points from source to center.
+        from sumpy.symbolic import sym_real_norm_2
         source_angle_rel_center = sym.atan2(-avec[1], -avec[0])
         avec_len = sym_real_norm_2(avec)
-        return [self.kernel.postprocess_at_source(
-                    hankel_1(l, arg_scale * avec_len)
-                    * rscale ** abs(l)
-                    * sym.exp(sym.I * l * source_angle_rel_center), avec)
-                    for l in self.get_coefficient_identifiers()]
+
+        import sympy
+        l = sympy.symbols("order")
+
+        return self.kernel.postprocess_at_source(
+            hankel_1(l, arg_scale * avec_len, "isrc")
+            * rscale ** sympy.Abs(l)
+            * sym.exp(sym.I * l * source_angle_rel_center), avec
+        )
 
     def evaluate(self, coeffs, bvec, rscale):
         if not self.use_rscale:
             rscale = 1
 
+        # "bessel_jn" differs from "bessel_j" by precomputing Bessel function inside
+        # a loop instead of recursively unrolling it
+        bessel_j = sym.Function("bessel_jn")
+
         from sumpy.symbolic import sym_real_norm_2
-        bessel_j = sym.Function("bessel_j")
         bvec_len = sym_real_norm_2(bvec)
         target_angle_rel_center = sym.atan2(bvec[1], bvec[0])
 
         arg_scale = self.get_bessel_arg_scaling()
 
-        return sum(coeffs[self.get_storage_index(l)]
-                   * self.kernel.postprocess_at_target(
-                       bessel_j(l, arg_scale * bvec_len)
-                       / rscale ** abs(l)
-                       * sym.exp(sym.I * l * -target_angle_rel_center), bvec)
-                for l in self.get_coefficient_identifiers())
+        import sympy
+        l = sympy.symbols("order")
+
+        return sympy.Sum(
+            coeffs * self.kernel.postprocess_at_target(
+                bessel_j(l, arg_scale * bvec_len, "itgt")
+                / rscale ** abs(l)
+                * sym.exp(sym.I * l * -target_angle_rel_center), bvec
+            ), (l, -4, 5))
 
     def translate_from(self, src_expansion, src_coeff_exprs, src_rscale,
             dvec, tgt_rscale):

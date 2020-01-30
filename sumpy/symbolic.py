@@ -27,7 +27,8 @@ import six
 from six.moves import range
 
 import numpy as np
-from pymbolic.mapper import IdentityMapper as IdentityMapperBase
+from loopy.symbolic import IdentityMapper as IdentityMapperBase
+from loopy.symbolic import WalkMapper as WalkMapperBase
 import pymbolic.primitives as prim
 
 import logging
@@ -245,5 +246,55 @@ class PymbolicToSympyMapperWithSymbols(PymbolicToSympyMapper):
             return sym.Symbol("%s%d" % (expr.aggregate.name, expr.index))
         else:
             self.raise_conversion_error(expr)
+
+
+# {{{ Series
+
+class Series(prim.Expression):
+    def __init__(self, function, name, low, high):
+        self.function = function
+        self.name = name
+        self.low = low
+        self.high = high
+
+    mapper_method = "map_series"
+
+    def __getinitargs__(self):
+        return self.function, self.name, self.low, self.high
+
+
+class IdentityMapper(IdentityMapperBase):
+    def map_series(self, expr):
+        return Series(
+            self.rec(expr.function),
+            expr.name,
+            expr.low,
+            expr.high
+        )
+
+    def map_call(self, expr, *args, **kwargs):
+        if isinstance(expr.function, prim.Variable):
+            name = expr.function.name
+            if name == "Abs":
+                return type(expr)(
+                    prim.Variable("abs"),
+                    tuple(
+                        self.rec(child, *args, **kwargs)
+                        for child in expr.parameters)
+                )
+
+        return IdentityMapperBase.map_call(self, expr)
+
+
+class WalkMapper(WalkMapperBase):
+    def map_series(self, expr, *args, **kwargs):
+        if not self.visit(expr, *args, **kwargs):
+            return
+
+        self.rec(expr.function, *args, **kwargs)
+
+        self.post_visit(expr, *args, **kwargs)
+
+# }}}
 
 # vim: fdm=marker

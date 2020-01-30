@@ -28,11 +28,12 @@ import numpy as np
 import pyopencl as cl
 import pyopencl.tools  # noqa
 import loopy as lp
+import loopy.match
 
 import six
 import re
 
-from pymbolic.mapper import IdentityMapper, WalkMapper, CSECachingMapperMixin
+from pymbolic.mapper import CSECachingMapperMixin
 import pymbolic.primitives as prim
 
 from loopy.types import NumpyType
@@ -40,6 +41,9 @@ from loopy.types import NumpyType
 from pytools import memoize_method
 
 from sumpy.symbolic import (SympyToPymbolicMapper as SympyToPymbolicMapperBase)
+from sumpy.symbolic import Series, IdentityMapper, WalkMapper
+
+import sympy
 
 import logging
 logger = logging.getLogger(__name__)
@@ -63,6 +67,18 @@ _SPECIAL_FUNCTION_NAMES = frozenset(dir(sym.functions))
 
 
 class SympyToPymbolicMapper(SympyToPymbolicMapperBase):
+
+    def map_Sum(self, expr):
+        if len(expr.limits) != 1:
+            raise NotImplementedError
+
+        name, low, high = expr.limits[0]
+
+        assert isinstance(name, sympy.expr.Expr)
+        low = int(low)
+        high = int(high)
+
+        return Series(self.rec(expr.function), self.rec(name), low, high)
 
     def not_supported(self, expr):
         if isinstance(expr, int):
@@ -178,8 +194,18 @@ def kill_trivial_assignments(assignments, retain_names=set()):
 
     result = []
     from pymbolic import substitute
+
+    def extended_substitue(expr, unsubst_rej):
+        if isinstance(expr, Series):
+            return Series(
+                substitute(expr.function, unsubst_rej),
+                expr.name, expr.low, expr.high
+            )
+        else:
+            return substitute(expr, unsubst_rej)
+
     for name, expr in approved_assignments:
-        r = substitute(expr, unsubst_rej)
+        r = extended_substitue(expr, unsubst_rej)
         result.append((name, r))
 
     logger.info(
@@ -421,29 +447,39 @@ class BesselDerivativeReplacer(CSECachingMapperMixin, IdentityMapper):
         assert isinstance(expr.child, prim.Derivative)
         call = expr.child.child
 
-        if (isinstance(call.function, prim.Variable)
-                and call.function.name in ["hankel_1", "bessel_j"]):
+        if isinstance(call.function, prim.Variable):
+            name = call.function.name
             function = call.function
-            order, _ = call.parameters
+            order = call.parameters[0]
             arg, = expr.values
-
             n_derivs = len(expr.child.variables)
-            import sympy as sym
 
-            # AS (9.1.31)
-            # http://dlmf.nist.gov/10.6.7
-            if order >= 0:
-                order_str = str(order)
-            else:
-                order_str = "m"+str(-order)
-            k = n_derivs
-            return prim.CommonSubexpression(
-                    2**(-k)*sum(
-                        (-1)**idx*int(sym.binomial(k, idx)) * function(i, arg)
-                        for idx, i in enumerate(range(order-k, order+k+1, 2))),
-                    "d%d_%s_%s" % (n_derivs, function.name, order_str))
+            if name in ["hankel_1", "bessel_j"]:
+                import sympy as sym
+
+                # AS (9.1.31)
+                # http://dlmf.nist.gov/10.6.7
+                if order >= 0:
+                    order_str = str(order)
+                else:
+                    order_str = "m"+str(-order)
+                k = n_derivs
+                return prim.CommonSubexpression(
+                        2**(-k)*sum(
+                            (-1)**idx*int(sym.binomial(k, idx)) * function(i, arg)
+                            for idx, i in enumerate(range(order-k, order+k+1, 2))),
+                        "d%d_%s_%s" % (n_derivs, function.name, order_str))
+            elif name in ["hankel_1n", "bessel_jn"]:
+                pt_iname = call.parameters[2]
+                if n_derivs == 1:
+                    return (function(order-1, arg, pt_iname) - function(order+1, arg, pt_iname))/2
+                else:
+                    raise NotImplementedError("Derivative of Hankel/Bessel function for order more than 1")
         else:
             return IdentityMapper.map_substitution(self, expr)
+
+    def map_series(self, expr):
+        return Series(self.rec(expr.function), expr.name, expr.low, expr.high)
 
     map_common_subexpression_uncached = IdentityMapper.map_common_subexpression
 
@@ -452,12 +488,42 @@ class BesselSubstitutor(CSECachingMapperMixin, IdentityMapper):
     def __init__(self, bessel_getter):
         self.bessel_getter = bessel_getter
 
+        # mappings from argument to the array name which holds the precomputed
+        # Bessel/Hankel function
+        self.bessel_precompute_insn = {}
+        self.hankel_precompute_insn = {}
+
+        self.new_dependencies_needed = []
+
     def map_call(self, expr):
         if isinstance(expr.function, prim.Variable):
             name = expr.function.name
             if name in ["hankel_1", "bessel_j"]:
                 order, arg = expr.parameters
                 return getattr(self.bessel_getter, name)(order, self.rec(arg))
+            elif name in ["hankel_1n", "bessel_jn"]:
+                if name == "hankel_1n":
+                    prefix = "H_"
+                    mapping = self.hankel_precompute_insn
+                else:
+                    prefix = "J_"
+                    mapping = self.bessel_precompute_insn
+
+                order, arg, pt_iname = expr.parameters
+
+                if (arg, pt_iname) not in mapping:
+                    arr_name = prefix + str(len(mapping))
+                    mapping[(arg, pt_iname)] = arr_name
+                else:
+                    arr_name = mapping[(arg, pt_iname)]
+
+                self.new_dependencies_needed.append(lp.match.Writes(arr_name))
+
+                return prim.If(
+                    prim.Comparison(order, ">=", 0),
+                    prim.Subscript(prim.Variable(arr_name), (pt_iname, order)),
+                    prim.Product((prim.Power(-1, order), prim.Subscript(prim.Variable(arr_name), (pt_iname, -order))))
+                )
 
         return IdentityMapper.map_call(self, expr)
 
@@ -631,6 +697,28 @@ class VectorComponentRewriter(CSECachingMapperMixin, IdentityMapper):
 # }}}
 
 
+# {{{ convert pymbolic "Series" class to loopy reduction
+
+class SeriesRewritter(CSECachingMapperMixin, IdentityMapper):
+
+    def __init__(self):
+        self.additional_loop_domain = []
+
+    def map_series(self, expr):
+        function = self.rec(expr.function)
+        low = expr.low
+        high = expr.high
+        self.additional_loop_domain.append(
+            (str(expr.name), low, high)
+        )
+
+        return lp.Reduction("sum", str(expr.name), function)
+
+    map_common_subexpression_uncached = IdentityMapper.map_common_subexpression
+
+# }}}
+
+
 # {{{ sum sign grouper
 
 class SumSignGrouper(CSECachingMapperMixin, IdentityMapper):
@@ -699,8 +787,30 @@ def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
     #    cse_walk(expr)
     #cse_tag = CSETagMapper(cse_walk)
 
-    # do the rest of the conversion
+    # {{{ Convert list of assignments to loopy assignments
+
     bessel_sub = BesselSubstitutor(BesselGetter(btog.bessel_j_arg_to_top_order))
+    sr = SeriesRewritter()
+    loopy_insns = []
+
+    for name, expr in assignments:
+        expr = sr(expr)
+        expr = bessel_sub(expr)
+
+        loopy_insns.append(
+            lp.Assignment(
+                id=None, assignee=name,
+                expression=expr,
+                temp_var_type=lp.Optional(None),
+                depends_on=frozenset(bessel_sub.new_dependencies_needed)
+            )
+        )
+
+        bessel_sub.new_dependencies_needed = []
+
+    # }}}
+
+    # do the rest of the conversion
     vcr = VectorComponentRewriter(vector_names)
     pwr = PowerRewriter()
     ssg = SumSignGrouper()
@@ -711,7 +821,6 @@ def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
     def convert_expr(name, expr):
         logger.debug("generate expression for: %s" % name)
         expr = bdr(expr)
-        expr = bessel_sub(expr)
         expr = vcr(expr)
         expr = pwr(expr)
         expr = fck(expr)
@@ -723,16 +832,72 @@ def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
             expr = m(expr)
         return expr
 
-    import loopy as lp
+    #  {{{ precompute Bessel and Hankel function
+
+    additional_arguments = []
+    additional_loop_domain = sr.additional_loop_domain
+
+    if len(bessel_sub.hankel_precompute_insn) > 0 or len(bessel_sub.bessel_precompute_insn) > 0:
+        for (name, low, high) in additional_loop_domain:
+            if name == "order":
+                max_order = max(abs(low), abs(high))
+                additional_loop_domain.append(("pre_order", 0, max_order))
+
+    for (arg, pt_iname), arr_name in bessel_sub.hankel_precompute_insn.items():
+        loopy_insns = get_hankel_insns(pt_iname, "pre_order", arr_name, convert_expr("precomputed hankel argument", arg)) + loopy_insns
+        additional_arguments.append(lp.GlobalArg(arr_name, shape=lp.auto))
+
+    for (arg, pt_iname), arr_name in bessel_sub.bessel_precompute_insn.items():
+        loopy_insns = get_bessel_insns(pt_iname, "pre_order", arr_name, convert_expr("precomputed bessel argument", arg), max_order+1) + loopy_insns
+        additional_arguments.append(lp.GlobalArg(arr_name, shape=lp.auto))
+
+    # }}}
+
     from pytools import MinRecursionLimit
     with MinRecursionLimit(3000):
-        result = [
-                lp.Assignment(id=None,
-                    assignee=name, expression=convert_expr(name, expr),
-                    temp_var_type=lp.Optional(None))
-                for name, expr in assignments]
+        for insn in loopy_insns:
+            if isinstance(insn, lp.Assignment):
+                insn.expression = convert_expr(insn.assignee, insn.expression)
 
     logger.info("loopy instruction generation: done")
-    return result
+    return loopy_insns, additional_loop_domain, additional_arguments
+
+
+def get_hankel_insns(point_iname, order_iname, arr_name, arg):
+    # This helper function generates loopy instructions for filling an array "H" with hankel function of the first kind
+    # of various order evaluating at a set of points
+    #
+    # point_iname should be the iname used for indexing the points e.g. 'isrc' or 'itgt'
+    # order_iname should be the iname used for indexing the hankel order
+
+    tmp_name = arr_name + "_loc"
+
+    return [
+        lp.Assignment(prim.Variable(tmp_name), arg, temp_var_type=lp.Optional(lp.auto), id=arr_name+"_loc"),
+        lp.Assignment(f"{arr_name}[{point_iname}, 0]", prim.Lookup(prim.Variable("hank1_01")(prim.Variable(tmp_name)), "order0"), id=arr_name+"_0", depends_on=frozenset([arr_name+"_loc"])),
+        lp.Assignment(f"{arr_name}[{point_iname}, 1]", prim.Lookup(prim.Variable("hank1_01")(prim.Variable(tmp_name)), "order1"), id=arr_name+"_1", depends_on=frozenset([arr_name+"_loc"])),
+        f"for {order_iname}",
+            lp.Assignment(f"{arr_name}[{point_iname}, {order_iname}+2]", f"2*({order_iname} + 1)/{tmp_name}*{arr_name}[{point_iname}, {order_iname}+1]-{arr_name}[{point_iname}, {order_iname}]", id=arr_name+"_n", depends_on=frozenset([arr_name+"_0", arr_name+"_1"])),
+        "end"
+    ]
+
+
+def get_bessel_insns(point_iname, order_iname, arr_name, arg, top_order):
+    # This helper function generates loopy instructions for filling an array with bessel function
+    # of various order evaluating at a set of points
+    #
+    # point_iname should be the iname used for indexing the points e.g. 'isrc' or 'itgt'
+    # order_iname should be the iname used for indexing the bessel order
+
+    tmp_name = arr_name + "_loc"
+
+    return [
+        lp.Assignment(prim.Variable(tmp_name), arg, temp_var_type=lp.Optional(lp.auto), id=arr_name+"_loc"),
+        lp.Assignment(f"{arr_name}[{point_iname}, {top_order}]", prim.Lookup(prim.Variable("bessel_jv_two")(top_order - 1, prim.Variable(tmp_name)), "jvp1"), id=arr_name+"_0", depends_on=frozenset([arr_name+"_loc"])),
+        lp.Assignment(f"{arr_name}[{point_iname}, {top_order}-1]", prim.Lookup(prim.Variable("bessel_jv_two")(top_order - 1, prim.Variable(tmp_name)), "jv"), id=arr_name+"_1", depends_on=frozenset([arr_name+"_loc"])),
+        f"for {order_iname}",
+            lp.Assignment(f"{arr_name}[{point_iname}, {top_order}-{order_iname}-2]", f"2*({top_order}-{order_iname}-1)/{tmp_name}*{arr_name}[{point_iname}, {top_order}-{order_iname}-1]-{arr_name}[{point_iname}, {top_order}-{order_iname}]", id=arr_name+"_n", depends_on=frozenset([arr_name+"_0", arr_name+"_1"])),
+        "end"
+    ]
 
 # vim: fdm=marker
