@@ -10,11 +10,11 @@ def process_kernel(knl, what_operator):
     if what_operator == "S":
         pass
     elif what_operator == "S0":
-        from sumpy.kernel import TargetDerivative
-        knl = TargetDerivative(0, knl)
+        from sumpy.kernel import AxisTargetDerivative
+        knl = AxisTargetDerivative(0, knl)
     elif what_operator == "S1":
-        from sumpy.kernel import TargetDerivative
-        knl = TargetDerivative(1, knl)
+        from sumpy.kernel import AxisTargetDerivative
+        knl = AxisTargetDerivative(1, knl)
     elif what_operator == "D":
         from sumpy.kernel import DirectionalSourceDerivative
         knl = DirectionalSourceDerivative(knl)
@@ -189,7 +189,6 @@ def draw_pot_figure(aspect_ratio,
             expansion_radii=np.ones(centers.shape[1]),
             **lpot_kwargs)
 
-    print(rtv.keys())
     curve_pot = rtv["result_0"]
 
     # }}}
