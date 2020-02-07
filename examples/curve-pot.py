@@ -60,15 +60,15 @@ def draw_pot_figure(aspect_ratio,
 
     from sumpy.p2p import P2P
     from sumpy.kernel import LaplaceKernel, HelmholtzKernel
-    from sumpy.expansion.local import H2DLocalExpansion, LineTaylorLocalExpansion
+    from sumpy.expansion.local import H2DLocalExpansion, H2DLocalExpansionSymbolicSum, LineTaylorLocalExpansion
     if helmholtz_k:
         if isinstance(helmholtz_k, complex):
             knl = HelmholtzKernel(2, allow_evanescent=True)
-            expn_class = H2DLocalExpansion
+            expn_class = H2DLocalExpansionSymbolicSum
             knl_kwargs = {"k": helmholtz_k}
         else:
             knl = HelmholtzKernel(2)
-            expn_class = H2DLocalExpansion
+            expn_class = H2DLocalExpansionSymbolicSum
             knl_kwargs = {"k": helmholtz_k}
 
     else:
@@ -183,13 +183,11 @@ def draw_pot_figure(aspect_ratio,
     evt, (vol_pot,) = p2p(queue, fp.points, native_curve.pos,
             [native_curve.speed*native_weights*density], **volpot_kwargs)
 
-    evt, rtv = lpot(queue, native_curve.pos, ovsmp_curve.pos,
+    evt, (curve_pot,) = lpot(queue, native_curve.pos, ovsmp_curve.pos,
             centers,
             [ovsmp_density * ovsmp_curve.speed * ovsmp_weights],
             expansion_radii=np.ones(centers.shape[1]),
             **lpot_kwargs)
-
-    curve_pot = rtv["result_0"]
 
     # }}}
 

@@ -603,4 +603,14 @@ class DefaultExpansionFactory(ExpansionFactoryBase):
 # }}}
 
 
+class OrderInameGenerator:
+    counter = 0
+
+    @classmethod
+    def get_next_order_iname(cls):
+        next_order_iname = "order" + str(cls.counter)
+        cls.counter += 1
+        return next_order_iname
+
+
 # vim: fdm=marker

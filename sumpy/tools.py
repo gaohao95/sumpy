@@ -718,6 +718,25 @@ def my_syntactic_subs(expr, subst_dict):
 
 
 def get_loopy_domain(loop_domains):
+    """
+    loop domain is a list of domain. Each domain is a tuple. If the tuple has 3 elements (name, low, high),
+    it represents iname "name" has range [low, high). If the tuple has 2 elements (name, duplicate_name),
+    it represents iname "name" has the same range as "duplicate_name".
+    """
+    domain_to_range = {}
+
+    for domain in loop_domains:
+        if len(domain) == 3:
+            name, low, high = domain
+            assert name not in domain_to_range
+            domain_to_range[name] = (low, high)
+
+    for idx, domain in enumerate(loop_domains):
+        if len(domain) == 2:
+            name, duplicate_name = domain
+            low, high = domain_to_range[duplicate_name]
+            loop_domains[idx] = (name, low, high)
+
     domain_names = ""
     conditions = ""
 

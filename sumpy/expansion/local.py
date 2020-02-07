@@ -343,15 +343,21 @@ class _FourierBesselLocalExpansionSymbolicSum(_FourierBesselLocalExpansion):
         avec_len = sym_real_norm_2(avec)
 
         import sympy
-        l = sympy.symbols("order")
+        from sumpy.expansion import OrderInameGenerator
+        order_iname = OrderInameGenerator.get_next_order_iname()
+        l = sympy.var(order_iname)
 
-        return self.kernel.postprocess_at_source(
-            hankel_1(l, arg_scale * avec_len, "isrc")
-            * rscale ** sympy.Abs(l)
-            * sym.exp(sym.I * l * source_angle_rel_center), avec
+        return (
+            self.kernel.postprocess_at_source(
+                hankel_1(l, arg_scale * avec_len, order_iname)
+                * rscale ** abs(l)
+                * sym.exp(sym.I * l * source_angle_rel_center), avec
+            ), order_iname
         )
 
     def evaluate(self, coeffs, bvec, rscale):
+        coeffs_sym, order_iname = coeffs
+
         if not self.use_rscale:
             rscale = 1
 
@@ -366,11 +372,11 @@ class _FourierBesselLocalExpansionSymbolicSum(_FourierBesselLocalExpansion):
         arg_scale = self.get_bessel_arg_scaling()
 
         import sympy
-        l = sympy.symbols("order")
+        l = sympy.symbols(order_iname)
 
         return sympy.Sum(
-            coeffs * self.kernel.postprocess_at_target(
-                bessel_j(l, arg_scale * bvec_len, "itgt")
+            coeffs_sym * self.kernel.postprocess_at_target(
+                bessel_j(l, arg_scale * bvec_len, order_iname)
                 / rscale ** abs(l)
                 * sym.exp(sym.I * l * -target_angle_rel_center), bvec
             ), (l, -4, 5))

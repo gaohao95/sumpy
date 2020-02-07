@@ -12,8 +12,8 @@ aspect_ratio = 1
 nsrc = 100
 novsmp = 100
 helmholtz_k = (35+4j)*0.3
-what_operator = "S0"
-what_operator_lpot = "S0"
+what_operator = "D"
+what_operator_lpot = "D"
 force_center_side = 1
 order = 4
 
@@ -161,7 +161,7 @@ mode_nr = 0
 density = np.cos(mode_nr*2*np.pi*native_t).astype(np.complex128)
 ovsmp_density = np.cos(mode_nr*2*np.pi*ovsmp_t).astype(np.complex128)
 
-_, rtv = lpot_unroll(
+_, (curve_pot_unroll,) = lpot_unroll(
     queue, native_curve.pos, ovsmp_curve.pos,
     centers,
     [ovsmp_density * ovsmp_curve.speed * ovsmp_weights],
@@ -169,19 +169,13 @@ _, rtv = lpot_unroll(
     **lpot_kwargs
 )
 
-print(rtv.keys())
-curve_pot_unroll = rtv["result_0"]
-
-_, rtv = lpot_symbolic_sum(
+_, (curve_pot_symbolic_sum,) = lpot_symbolic_sum(
     queue, native_curve.pos, ovsmp_curve.pos,
     centers,
     [ovsmp_density * ovsmp_curve.speed * ovsmp_weights],
     expansion_radii=np.ones(centers.shape[1]),
     **lpot_kwargs
 )
-
-print(rtv.keys())
-curve_pot_symbolic_sum = rtv["result_0"]
 
 error = np.linalg.norm(curve_pot_unroll - curve_pot_symbolic_sum, ord=np.inf) / np.linalg.norm(curve_pot_unroll, ord=np.inf)
 print(error)

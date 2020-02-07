@@ -80,7 +80,8 @@ def expand(expansion_nr, sac, expansion, avec, bvec):
                             expansion_nr, stringify_expn_index(i)),
                             coefficients[expansion.get_storage_index(i)]))
                 for i in expansion.get_coefficient_identifiers()]
-    elif isinstance(coefficients, sympy.expr.Expr):
+    elif isinstance(coefficients, tuple):
+        assert isinstance(coefficients[0], sympy.expr.Expr)
         # 'coefficients' is a symbolic expression which takes the order as a symbolic
         # variable
         assigned_coeffs = coefficients
@@ -129,7 +130,7 @@ class LayerPotentialBase(KernelComputation, KernelCacheWrapper):
 
         logger.info("compute expansion expressions: done")
 
-        # sac.run_global_cse()
+        sac.run_global_cse()
 
         from sumpy.codegen import to_loopy_insns
         loopy_insns, additional_loop_domain, additional_arguments = to_loopy_insns(
@@ -266,10 +267,11 @@ class LayerPotential(LayerPotentialBase):
         """
 
         knl = self.get_cached_optimized_kernel()
-        knl = lp.set_options(knl, "return_dict")
 
         for i, dens in enumerate(strengths):
             kwargs["strength_%d" % i] = dens
+
+        print(knl)
 
         return knl(queue, src=sources, tgt=targets, center=centers,
                 expansion_radii=expansion_radii, **kwargs)

@@ -251,6 +251,7 @@ class PymbolicToSympyMapperWithSymbols(PymbolicToSympyMapper):
 # {{{ Series
 
 class Series(prim.Expression):
+    # Note: 'order' is a reserved name for representing the order used in Hankel and Bessel function
     def __init__(self, function, name, low, high):
         self.function = function
         self.name = name

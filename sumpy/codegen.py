@@ -470,9 +470,9 @@ class BesselDerivativeReplacer(CSECachingMapperMixin, IdentityMapper):
                             for idx, i in enumerate(range(order-k, order+k+1, 2))),
                         "d%d_%s_%s" % (n_derivs, function.name, order_str))
             elif name in ["hankel_1n", "bessel_jn"]:
-                pt_iname = call.parameters[2]
+                order_iname = call.parameters[2]
                 if n_derivs == 1:
-                    return (function(order-1, arg, pt_iname) - function(order+1, arg, pt_iname))/2
+                    return (function(order-1, arg, order_iname) - function(order+1, arg, order_iname))/2
                 else:
                     raise NotImplementedError("Derivative of Hankel/Bessel function for order more than 1")
         else:
@@ -509,20 +509,20 @@ class BesselSubstitutor(CSECachingMapperMixin, IdentityMapper):
                     prefix = "J_"
                     mapping = self.bessel_precompute_insn
 
-                order, arg, pt_iname = expr.parameters
+                order, arg, order_iname = expr.parameters
 
-                if (arg, pt_iname) not in mapping:
+                if arg not in mapping:
                     arr_name = prefix + str(len(mapping))
-                    mapping[(arg, pt_iname)] = arr_name
+                    mapping[arg] = (arr_name, order_iname)
                 else:
-                    arr_name = mapping[(arg, pt_iname)]
+                    arr_name, _ = mapping[arg]
 
                 self.new_dependencies_needed.append(lp.match.Writes(arr_name))
 
                 return prim.If(
                     prim.Comparison(order, ">=", 0),
-                    prim.Subscript(prim.Variable(arr_name), (pt_iname, order)),
-                    prim.Product((prim.Power(-1, order), prim.Subscript(prim.Variable(arr_name), (pt_iname, -order))))
+                    prim.Subscript(prim.Variable(arr_name), order),
+                    prim.Product((prim.Power(-1, order), prim.Subscript(prim.Variable(arr_name), -order)))
                 )
 
         return IdentityMapper.map_call(self, expr)
@@ -708,11 +708,14 @@ class SeriesRewritter(CSECachingMapperMixin, IdentityMapper):
         function = self.rec(expr.function)
         low = expr.low
         high = expr.high
+
+        name = str(expr.name)
+
         self.additional_loop_domain.append(
-            (str(expr.name), low, high)
+            (name, low, high)
         )
 
-        return lp.Reduction("sum", str(expr.name), function)
+        return lp.Reduction("sum", name, function)
 
     map_common_subexpression_uncached = IdentityMapper.map_common_subexpression
 
@@ -834,22 +837,36 @@ def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
 
     #  {{{ precompute Bessel and Hankel function
 
-    additional_arguments = []
+    precomp_arr_names = []
+    precomp_insns = []
     additional_loop_domain = sr.additional_loop_domain
+    order_iname_to_range = {}
 
     if len(bessel_sub.hankel_precompute_insn) > 0 or len(bessel_sub.bessel_precompute_insn) > 0:
         for (name, low, high) in additional_loop_domain:
-            if name == "order":
+            if name.startswith("order"):
                 max_order = max(abs(low), abs(high))
-                additional_loop_domain.append(("pre_order", 0, max_order))
+                assert name not in order_iname_to_range
+                order_iname_to_range[name] = max_order
 
-    for (arg, pt_iname), arr_name in bessel_sub.hankel_precompute_insn.items():
-        loopy_insns = get_hankel_insns(pt_iname, "pre_order", arr_name, convert_expr("precomputed hankel argument", arg)) + loopy_insns
-        additional_arguments.append(lp.GlobalArg(arr_name, shape=lp.auto))
+    for arg, (arr_name, order_iname) in bessel_sub.hankel_precompute_insn.items():
+        new_order_iname = str(order_iname) + "_" + arr_name
+        max_order = order_iname_to_range[str(order_iname)]
+        additional_loop_domain.append((new_order_iname, 0, max_order))
 
-    for (arg, pt_iname), arr_name in bessel_sub.bessel_precompute_insn.items():
-        loopy_insns = get_bessel_insns(pt_iname, "pre_order", arr_name, convert_expr("precomputed bessel argument", arg), max_order+1) + loopy_insns
-        additional_arguments.append(lp.GlobalArg(arr_name, shape=lp.auto))
+        precomp_insns.extend(get_hankel_insns(new_order_iname, arr_name, convert_expr("precomputed hankel argument", arg)))
+        precomp_arr_names.append((arr_name, max_order))
+
+    for arg, (arr_name, order_iname) in bessel_sub.bessel_precompute_insn.items():
+        new_order_iname = str(order_iname) + "_" + arr_name
+        max_order = order_iname_to_range[str(order_iname)]
+        additional_loop_domain.append((new_order_iname, 0, order_iname_to_range[str(order_iname)]))
+
+        precomp_insns.extend(get_bessel_insns(new_order_iname, arr_name, convert_expr("precomputed bessel argument", arg), max_order+1))
+        precomp_arr_names.append((arr_name, max_order))
+
+    additional_arguments = [lp.TemporaryVariable(arr_name, shape=(max_order,)) for arr_name, max_order in precomp_arr_names]
+    loopy_insns = precomp_insns + loopy_insns
 
     # }}}
 
@@ -863,41 +880,49 @@ def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
     return loopy_insns, additional_loop_domain, additional_arguments
 
 
-def get_hankel_insns(point_iname, order_iname, arr_name, arg):
-    # This helper function generates loopy instructions for filling an array "H" with hankel function of the first kind
-    # of various order evaluating at a set of points
+def get_hankel_insns(order_iname, arr_name, arg):
+    # This helper function generates loopy instructions for filling an array with hankel function of the first kind
+    # of various order evaluating at a point given by 'arg'
     #
-    # point_iname should be the iname used for indexing the points e.g. 'isrc' or 'itgt'
     # order_iname should be the iname used for indexing the hankel order
 
-    tmp_name = arr_name + "_loc"
+    loc_name = arr_name + "_loc"
 
     return [
-        lp.Assignment(prim.Variable(tmp_name), arg, temp_var_type=lp.Optional(lp.auto), id=arr_name+"_loc"),
-        lp.Assignment(f"{arr_name}[{point_iname}, 0]", prim.Lookup(prim.Variable("hank1_01")(prim.Variable(tmp_name)), "order0"), id=arr_name+"_0", depends_on=frozenset([arr_name+"_loc"])),
-        lp.Assignment(f"{arr_name}[{point_iname}, 1]", prim.Lookup(prim.Variable("hank1_01")(prim.Variable(tmp_name)), "order1"), id=arr_name+"_1", depends_on=frozenset([arr_name+"_loc"])),
+        lp.Assignment(prim.Variable(loc_name), arg, temp_var_type=lp.Optional(lp.auto), id=arr_name+"_loc"),
+        lp.Assignment(f"{arr_name}[0]", prim.Lookup(prim.Variable("hank1_01")(prim.Variable(loc_name)), "order0"), id=arr_name+"_0", depends_on=frozenset([arr_name+"_loc"])),
+        lp.Assignment(f"{arr_name}[1]", prim.Lookup(prim.Variable("hank1_01")(prim.Variable(loc_name)), "order1"), id=arr_name+"_1", depends_on=frozenset([arr_name+"_loc"])),
         f"for {order_iname}",
-            lp.Assignment(f"{arr_name}[{point_iname}, {order_iname}+2]", f"2*({order_iname} + 1)/{tmp_name}*{arr_name}[{point_iname}, {order_iname}+1]-{arr_name}[{point_iname}, {order_iname}]", id=arr_name+"_n", depends_on=frozenset([arr_name+"_0", arr_name+"_1"])),
+            lp.Assignment(
+                f"{arr_name}[{order_iname}+2]", f"2*({order_iname} + 1)/{loc_name}*{arr_name}[{order_iname}+1]-{arr_name}[{order_iname}]",
+                id=arr_name+"_n",
+                depends_on=frozenset([arr_name+"_0", arr_name+"_1"]),
+                no_sync_with=frozenset([(arr_name+"_0", "global"), (arr_name+"_1", "global")])
+            ),
         "end"
     ]
 
 
-def get_bessel_insns(point_iname, order_iname, arr_name, arg, top_order):
+def get_bessel_insns(order_iname, arr_name, arg, top_order):
     # This helper function generates loopy instructions for filling an array with bessel function
-    # of various order evaluating at a set of points
+    # of various order evaluating at a point given by 'arg'
     #
-    # point_iname should be the iname used for indexing the points e.g. 'isrc' or 'itgt'
     # order_iname should be the iname used for indexing the bessel order
 
-    tmp_name = arr_name + "_loc"
+    loc_name = arr_name + "_loc"
 
     return [
-        lp.Assignment(prim.Variable(tmp_name), arg, temp_var_type=lp.Optional(lp.auto), id=arr_name+"_loc"),
-        lp.Assignment(f"{arr_name}[{point_iname}, {top_order}]", prim.Lookup(prim.Variable("bessel_jv_two")(top_order - 1, prim.Variable(tmp_name)), "jvp1"), id=arr_name+"_0", depends_on=frozenset([arr_name+"_loc"])),
-        lp.Assignment(f"{arr_name}[{point_iname}, {top_order}-1]", prim.Lookup(prim.Variable("bessel_jv_two")(top_order - 1, prim.Variable(tmp_name)), "jv"), id=arr_name+"_1", depends_on=frozenset([arr_name+"_loc"])),
+        lp.Assignment(prim.Variable(loc_name), arg, temp_var_type=lp.Optional(lp.auto), id=arr_name+"_loc"),
+        lp.Assignment(f"{arr_name}[{top_order}]", prim.Lookup(prim.Variable("bessel_jv_two")(top_order - 1, prim.Variable(loc_name)), "jvp1"), id=arr_name+"_0", depends_on=frozenset([arr_name+"_loc"])),
+        lp.Assignment(f"{arr_name}[{top_order}-1]", prim.Lookup(prim.Variable("bessel_jv_two")(top_order - 1, prim.Variable(loc_name)), "jv"), id=arr_name+"_1", depends_on=frozenset([arr_name+"_loc"])),
         f"for {order_iname}",
-            lp.Assignment(f"{arr_name}[{point_iname}, {top_order}-{order_iname}-2]", f"2*({top_order}-{order_iname}-1)/{tmp_name}*{arr_name}[{point_iname}, {top_order}-{order_iname}-1]-{arr_name}[{point_iname}, {top_order}-{order_iname}]", id=arr_name+"_n", depends_on=frozenset([arr_name+"_0", arr_name+"_1"])),
-        "end"
+            lp.Assignment(
+                f"{arr_name}[{top_order}-{order_iname}-2]", f"2*({top_order}-{order_iname}-1)/{loc_name}*{arr_name}[{top_order}-{order_iname}-1]-{arr_name}[{top_order}-{order_iname}]",
+                id=arr_name+"_n",
+                depends_on=frozenset([arr_name+"_0", arr_name+"_1"]),
+                no_sync_with=frozenset([(arr_name+"_0", "global"), (arr_name+"_1", "global")])
+            ),
+        "end",
     ]
 
 # vim: fdm=marker
