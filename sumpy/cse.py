@@ -70,6 +70,8 @@ from sumpy.symbolic import (
     Basic, Mul, Add, Pow, Symbol, _coeff_isneg, Derivative, Subs)
 from sympy.core.compatibility import iterable
 from sympy.utilities.iterables import numbered_symbols
+from sympy.concrete.summations import Sum
+from sympy.core.function import AppliedUndef
 
 
 __doc__ = """
@@ -462,6 +464,13 @@ def tree_cse(exprs, symbols, opt_subs=None):
                 excluded_symbols.add(expr)
             return
 
+        if isinstance(expr, AppliedUndef):
+            if expr.name == 'hankel_1n' or expr.name == 'bessel_jn':
+                # FIXME: Currently, CSE does not work for the argument of precomputed
+                #  Hankel and Bessel function because the precomputation is added
+                #  during code generation to the outer scope.
+                return
+
         if iterable(expr):
             args = expr
 
@@ -495,22 +504,41 @@ def tree_cse(exprs, symbols, opt_subs=None):
     symbols = (symbol for symbol in symbols if symbol not in excluded_symbols)
 
     replacements = []
+    sym_to_inames = dict()
 
     subs = dict()
 
-    def rebuild(expr):
+    def rebuild(expr, within_inames):
         if not isinstance(expr, (Basic, Unevaluated)):
             return expr
 
         if not expr.args:
             return expr
 
+        if isinstance(expr, Sum):
+            if len(expr.limits) != 1:
+                raise NotImplementedError
+
+            name = expr.limits[0][0].name
+            within_inames = set(within_inames)
+            within_inames.add(name)
+            within_inames = frozenset(within_inames)
+
+        if isinstance(expr, AppliedUndef):
+            if expr.name == 'hankel_1n' or expr.name == 'bessel_jn':
+                # FIXME: Currently, CSE does not work for the argument of precomputed
+                #  Hankel and Bessel function because the precomputation is added
+                #  during code generation to the outer scope.
+                return expr
+
         if iterable(expr):
-            new_args = [rebuild(arg) for arg in expr]
+            new_args = [rebuild(arg, within_inames) for arg in expr]
             return expr.func(*new_args)
 
         if expr in subs:
-            return subs[expr]
+            sym = subs[expr]
+            sym_to_inames[sym] = sym_to_inames[sym].intersection(within_inames)
+            return sym
 
         orig_expr = expr
         if expr in opt_subs:
@@ -518,7 +546,7 @@ def tree_cse(exprs, symbols, opt_subs=None):
 
         new_expr = expr
         if not isinstance(expr, CSE_NO_DESCEND_CLASSES):
-            new_args = tuple(rebuild(arg) for arg in expr.args)
+            new_args = tuple(rebuild(arg, within_inames) for arg in expr.args)
             if isinstance(expr, Unevaluated) or new_args != expr.args:
                 new_expr = expr.func(*new_args)
 
@@ -530,6 +558,7 @@ def tree_cse(exprs, symbols, opt_subs=None):
 
             subs[orig_expr] = sym
             replacements.append((sym, new_expr))
+            sym_to_inames[sym] = within_inames
             return sym
 
         return new_expr
@@ -539,12 +568,12 @@ def tree_cse(exprs, symbols, opt_subs=None):
     reduced_exprs = []
     for e in exprs:
         if isinstance(e, Basic):
-            reduced_e = rebuild(e)
+            reduced_e = rebuild(e, frozenset())
         else:
             reduced_e = e
         reduced_exprs.append(reduced_e)
 
-    return replacements, reduced_exprs
+    return replacements, reduced_exprs, sym_to_inames
 
 # }}}
 
@@ -591,12 +620,12 @@ def cse(exprs, symbols=None, optimizations=None):
     opt_subs = opt_cse(reduced_exprs)
 
     # Main CSE algorithm.
-    replacements, reduced_exprs = tree_cse(reduced_exprs, symbols, opt_subs)
+    replacements, reduced_exprs, sym_to_inames = tree_cse(reduced_exprs, symbols, opt_subs)
 
     # Postprocess the expressions to return the expressions to canonical form.
     for i, (sym, subtree) in enumerate(replacements):
         subtree = postprocess_for_cse(subtree, optimizations)
-        replacements[i] = (sym, subtree)
+        replacements[i] = (sym, subtree, sym_to_inames[sym])
     reduced_exprs = [postprocess_for_cse(e, optimizations) for e in reduced_exprs]
 
     return replacements, reduced_exprs

@@ -135,6 +135,7 @@ class LayerPotentialBase(KernelComputation, KernelCacheWrapper):
         from sumpy.codegen import to_loopy_insns
         loopy_insns, additional_loop_domain, additional_arguments = to_loopy_insns(
                 six.iteritems(sac.assignments),
+                within_inames=sac.within_inames,
                 vector_names=set(["a", "b"]),
                 pymbolic_expr_maps=[
                     expn.kernel.get_code_transformer() for expn in self.expansions],
