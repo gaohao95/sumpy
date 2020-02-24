@@ -379,7 +379,7 @@ class _FourierBesselLocalExpansionSymbolicSum(_FourierBesselLocalExpansion):
                 bessel_j(l, arg_scale * bvec_len, order_iname)
                 / rscale ** abs(l)
                 * sym.exp(sym.I * l * -target_angle_rel_center), bvec
-            ), (l, -4, 5))
+            ), (l, -self.order, self.order+1))
 
 
 class H2DLocalExpansion(_FourierBesselLocalExpansion):

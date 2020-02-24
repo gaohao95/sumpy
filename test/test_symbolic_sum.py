@@ -9,13 +9,13 @@ from sumpy.expansion.local import H2DLocalExpansion, H2DLocalExpansionSymbolicSu
 from sumpy.qbx import LayerPotential
 
 aspect_ratio = 1
-nsrc = 100
-novsmp = 100
+nsrc = 500
+novsmp = 4 * nsrc
 helmholtz_k = (35+4j)*0.3
 what_operator = "D"
 what_operator_lpot = "D"
 force_center_side = 1
-order = 4
+order = 5
 
 logging.basicConfig(level=logging.INFO)
 
@@ -176,6 +176,7 @@ _, (curve_pot_symbolic_sum,) = lpot_symbolic_sum(
     expansion_radii=np.ones(centers.shape[1]),
     **lpot_kwargs
 )
+
 
 error = np.linalg.norm(curve_pot_unroll - curve_pot_symbolic_sum, ord=np.inf) / np.linalg.norm(curve_pot_unroll, ord=np.inf)
 print(error)

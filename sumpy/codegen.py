@@ -767,7 +767,7 @@ class MathConstantRewriter(CSECachingMapperMixin, IdentityMapper):
 
 
 def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
-                   complex_dtype=None, retain_names=set(), within_inames={}):
+                   complex_dtype=None, retain_names=set()):
     logger.info("loopy instruction generation: start")
     assignments = list(assignments)
 
@@ -800,18 +800,12 @@ def to_loopy_insns(assignments, vector_names=set(), pymbolic_expr_maps=[],
         expr = sr(expr)
         expr = bessel_sub(expr)
 
-        if name not in within_inames:
-            within_inames_this = frozenset()
-        else:
-            within_inames_this = within_inames[name]
-
         loopy_insns.append(
             lp.Assignment(
                 id=None, assignee=name,
                 expression=expr,
                 temp_var_type=lp.Optional(None),
-                depends_on=frozenset(bessel_sub.new_dependencies_needed),
-                within_inames=within_inames_this
+                depends_on=frozenset(bessel_sub.new_dependencies_needed)
             )
         )
 

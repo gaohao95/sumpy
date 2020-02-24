@@ -103,14 +103,12 @@ class SymbolicAssignmentCollection(object):
     def __init__(self, assignments=None):
         """
         :arg assignments: mapping from *var_name* to expression
-        :arg within_inames: mapping from *var_name* to frozenset of inames
         """
 
         if assignments is None:
             assignments = {}
 
         self.assignments = assignments
-        self.within_inames = {}
 
         self.symbol_generator = _SymbolGenerator(self.assignments)
         self.all_dependencies_cache = {}
@@ -146,7 +144,7 @@ class SymbolicAssignmentCollection(object):
         self.all_dependencies_cache[var_name] = result
         return result
 
-    def add_assignment(self, name, expr, root_name=None, wrt_set=None, within_inames=frozenset()):
+    def add_assignment(self, name, expr, root_name=None, wrt_set=None):
         assert isinstance(name, six.string_types)
         assert name not in self.assignments
 
@@ -156,7 +154,6 @@ class SymbolicAssignmentCollection(object):
             root_name = name
 
         self.assignments[name] = sym.sympify(expr)
-        self.within_inames[name] = within_inames
 
     def assign_unique(self, name_base, expr):
         """Assign *expr* to a new variable whose name is based on *name_base*.
@@ -194,9 +191,9 @@ class SymbolicAssignmentCollection(object):
         for name, new_expr in zip(assign_names, new_assign_exprs):
             self.assignments[name] = new_expr
 
-        for name, value, within_inames in new_assignments:
+        for name, value in new_assignments:
             assert isinstance(name, sym.Symbol)
-            self.add_assignment(name.name, value, within_inames=within_inames)
+            self.add_assignment(name.name, value)
 
         logger.info("common subexpression elimination: done after {dur:.2f} s"
                     .format(dur=time.time() - start_time))

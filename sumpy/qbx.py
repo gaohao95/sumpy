@@ -135,7 +135,6 @@ class LayerPotentialBase(KernelComputation, KernelCacheWrapper):
         from sumpy.codegen import to_loopy_insns
         loopy_insns, additional_loop_domain, additional_arguments = to_loopy_insns(
                 six.iteritems(sac.assignments),
-                within_inames=sac.within_inames,
                 vector_names=set(["a", "b"]),
                 pymbolic_expr_maps=[
                     expn.kernel.get_code_transformer() for expn in self.expansions],
@@ -266,13 +265,18 @@ class LayerPotential(LayerPotentialBase):
         :arg strengths: are required to have area elements and quadrature weights
             already multiplied in.
         """
+        import time
+        start_time = time.time()
 
         knl = self.get_cached_optimized_kernel()
 
+        # knl = lp.set_options(knl, "write_cl")
+        print(knl)
+
+        logging.info("sumpy->loopy kernel time: " + str(time.time() - start_time))
+
         for i, dens in enumerate(strengths):
             kwargs["strength_%d" % i] = dens
-
-        print(knl)
 
         return knl(queue, src=sources, tgt=targets, center=centers,
                 expansion_radii=expansion_radii, **kwargs)

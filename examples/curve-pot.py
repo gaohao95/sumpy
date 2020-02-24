@@ -60,7 +60,7 @@ def draw_pot_figure(aspect_ratio,
 
     from sumpy.p2p import P2P
     from sumpy.kernel import LaplaceKernel, HelmholtzKernel
-    from sumpy.expansion.local import H2DLocalExpansion, H2DLocalExpansionSymbolicSum, LineTaylorLocalExpansion
+    from sumpy.expansion.local import H2DLocalExpansionSymbolicSum, LineTaylorLocalExpansion
     if helmholtz_k:
         if isinstance(helmholtz_k, complex):
             knl = HelmholtzKernel(2, allow_evanescent=True)
