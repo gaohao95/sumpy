@@ -69,6 +69,11 @@ class SympyToPymbolicMapper(SympyToPymbolicMapperBase):
             return expr
         elif getattr(expr, "is_Function", False):
             func_name = SympyToPymbolicMapperBase.function_name(self, expr)
+
+            if func_name == "CommonSubexpression":
+                assert len(expr.args) == 1
+                return prim.wrap_in_cse(self.rec(expr.args[0]))
+
             return prim.Variable(func_name)(
                     *tuple(self.rec(arg) for arg in expr.args))
         else:
