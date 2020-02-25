@@ -182,18 +182,13 @@ class SymbolicAssignmentCollection(object):
         #from sumpy.symbolic import checked_cse
 
         from sumpy.cse import cse
-        new_assignments, new_exprs = cse(assign_exprs + extra_exprs,
-                symbols=self.symbol_generator)
+        new_exprs = cse(assign_exprs + extra_exprs)
 
         new_assign_exprs = new_exprs[:len(assign_exprs)]
         new_extra_exprs = new_exprs[len(assign_exprs):]
 
         for name, new_expr in zip(assign_names, new_assign_exprs):
             self.assignments[name] = new_expr
-
-        for name, value in new_assignments:
-            assert isinstance(name, sym.Symbol)
-            self.add_assignment(name.name, value)
 
         logger.info("common subexpression elimination: done after {dur:.2f} s"
                     .format(dur=time.time() - start_time))

@@ -67,9 +67,9 @@ DAMAGE.
 # }}}
 
 from sumpy.symbolic import (
-    Basic, Mul, Add, Pow, Symbol, _coeff_isneg, Derivative, Subs)
+    Basic, Mul, Add, Pow, _coeff_isneg, Derivative, Subs)
 from sympy.core.compatibility import iterable
-from sympy.utilities.iterables import numbered_symbols
+from sympy import Function
 
 
 __doc__ = """
@@ -431,13 +431,11 @@ def opt_cse(exprs):
 
 # {{{ tree cse
 
-def tree_cse(exprs, symbols, opt_subs=None):
+def tree_cse(exprs, opt_subs=None):
     """
     Perform raw CSE on an expression tree, taking opt_subs into account.
 
     :arg exprs: A list of sympy expressions to reduce
-    :arg symbols: An infinite iterator yielding unique Symbols used to label
-        the common subexpressions which are pulled out.
     :arg opt_subs: A dictionary of expression substitutions to be
         substituted before any CSE action is performed.
 
@@ -449,17 +447,13 @@ def tree_cse(exprs, symbols, opt_subs=None):
     # {{{ find repeated sub-expressions and used symbols
 
     to_eliminate = set()
-
     seen_subexp = set()
-    excluded_symbols = set()
 
     def find_repeated(expr):
         if not isinstance(expr, (Basic, Unevaluated)):
             return
 
         if isinstance(expr, Basic) and expr.is_Atom:
-            if expr.is_Symbol:
-                excluded_symbols.add(expr)
             return
 
         if iterable(expr):
@@ -491,11 +485,6 @@ def tree_cse(exprs, symbols, opt_subs=None):
 
     # {{{ rebuild tree
 
-    # Remove symbols from the generator that conflict with names in the expressions.
-    symbols = (symbol for symbol in symbols if symbol not in excluded_symbols)
-
-    replacements = []
-
     subs = dict()
 
     def rebuild(expr):
@@ -523,41 +512,32 @@ def tree_cse(exprs, symbols, opt_subs=None):
                 new_expr = expr.func(*new_args)
 
         if orig_expr in to_eliminate:
-            try:
-                sym = next(symbols)
-            except StopIteration:
-                raise ValueError("Symbols iterator ran out of symbols.")
-
-            subs[orig_expr] = sym
-            replacements.append((sym, new_expr))
-            return sym
+            new_expr = Function("CommonSubexpression")(new_expr)
+            subs[orig_expr] = new_expr
+            return new_expr
 
         return new_expr
 
     # }}}
 
-    reduced_exprs = []
+    wrapped_exprs = []
     for e in exprs:
         if isinstance(e, Basic):
-            reduced_e = rebuild(e)
+            wrapped_e = rebuild(e)
         else:
-            reduced_e = e
-        reduced_exprs.append(reduced_e)
+            wrapped_e = e
+        wrapped_exprs.append(wrapped_e)
 
-    return replacements, reduced_exprs
+    return wrapped_exprs
 
 # }}}
 
 
-def cse(exprs, symbols=None, optimizations=None):
+def cse(exprs, optimizations=None):
     """
     Perform common subexpression elimination on an expression.
 
     :arg exprs: A list of sympy expressions, or a single sympy expression to reduce
-    :arg symbols: An iterator yielding unique Symbols used to label the
-        common subexpressions which are pulled out. The ``numbered_symbols``
-        generator from sympy is useful. The default is a stream of symbols of the
-        form "x0", "x1", etc. This must be an infinite iterator.
     :arg optimizations: A list of (callable, callable) pairs consisting of
         (preprocessor, postprocessor) pairs of external optimization functions.
 
@@ -578,27 +558,17 @@ def cse(exprs, symbols=None, optimizations=None):
         optimizations = []
 
     # Preprocess the expressions to give us better optimization opportunities.
-    reduced_exprs = [preprocess_for_cse(e, optimizations) for e in exprs]
-
-    if symbols is None:
-        symbols = numbered_symbols(cls=Symbol)
-    else:
-        # In case we get passed an iterable with an __iter__ method instead of
-        # an actual iterator.
-        symbols = iter(symbols)
+    wrapped_exprs = [preprocess_for_cse(e, optimizations) for e in exprs]
 
     # Find other optimization opportunities.
-    opt_subs = opt_cse(reduced_exprs)
+    opt_subs = opt_cse(wrapped_exprs)
 
     # Main CSE algorithm.
-    replacements, reduced_exprs = tree_cse(reduced_exprs, symbols, opt_subs)
+    wrapped_exprs = tree_cse(wrapped_exprs, opt_subs)
 
     # Postprocess the expressions to return the expressions to canonical form.
-    for i, (sym, subtree) in enumerate(replacements):
-        subtree = postprocess_for_cse(subtree, optimizations)
-        replacements[i] = (sym, subtree)
-    reduced_exprs = [postprocess_for_cse(e, optimizations) for e in reduced_exprs]
+    wrapped_exprs = [postprocess_for_cse(e, optimizations) for e in wrapped_exprs]
 
-    return replacements, reduced_exprs
+    return wrapped_exprs
 
 # vim: fdm=marker

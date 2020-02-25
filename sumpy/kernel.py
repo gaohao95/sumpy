@@ -447,14 +447,20 @@ class BiharmonicKernel(ExpressionKernel):
     init_arg_names = ("dim",)
 
     def __init__(self, dim=None):
-        # See https://arxiv.org/abs/1202.1811
         r = pymbolic_real_norm_2(make_sym_vector("d", dim))
         if dim == 2:
-            expr = r**2 * (var("log")(r) - 1)
-            scaling = -1/(8*var("pi"))
-        elif dim == 3:
-            expr = r
+            # Ref: Farkas, Peter. Mathematical foundations for fast algorithms
+            # for the biharmonic equation. Technical Report 765,
+            # Department of Computer Science, Yale University, 1990.
+            expr = r**2 * var("log")(r)
             scaling = 1/(8*var("pi"))
+        elif dim == 3:
+            # Ref: Jiang, Shidong, Bo Ren, Paul Tsuji, and Lexing Ying.
+            # "Second kind integral equations for the first kind Dirichlet problem
+            #  of the biharmonic equation in three dimensions."
+            # Journal of Computational Physics 230, no. 19 (2011): 7488-7501.
+            expr = r
+            scaling = -1/(8*var("pi"))
         else:
             raise RuntimeError("unsupported dimensionality")
 
